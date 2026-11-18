@@ -16,8 +16,7 @@ import {
   type Extension,
   Compartment,
   StateEffect,
-  EditorState,
-  RangeSetBuilder
+  EditorState
 } from '@codemirror/state'
 import {
   EditorView,
@@ -56,9 +55,10 @@ class PilcrowWidget extends WidgetType {
 const pilcrowDeco = Decoration.widget({ widget: new PilcrowWidget(), side: 10000 })
 
 function showLineEndings (view: EditorView): DecorationSet {
-  const builder = new RangeSetBuilder<Decoration>()
+  const lineEnds = new Set<number>()
+  const tree = syntaxTree(view.state)
   for (const { from, to } of view.visibleRanges) {
-    syntaxTree(view.state).iterate({
+    tree.iterate({
       from,
       to,
       enter (node) {
@@ -69,15 +69,31 @@ function showLineEndings (view: EditorView): DecorationSet {
         if ([ 'Paragraph', 'Blockquote', 'FootnoteRef' ].includes(node.name) || node.name.includes('ATX') || node.name.includes('Setext')) {
           for (let pos = node.from; pos <= node.to;) {
             const line = view.state.doc.lineAt(pos)
-            builder.add(line.to, line.to, pilcrowDeco)
+            lineEnds.add(line.to)
             pos = line.to + 1
           }
           return false
         }
       }
     })
+
+    // Blank lines between Markdown nodes are missing from the syntax tree.
+    for (let pos = from; pos <= to;) {
+      const line = view.state.doc.lineAt(pos)
+      pos = line.to + 1
+      if (line.text.trim() !== '' || lineEnds.has(line.to)) { continue }
+
+      const node = tree.cursorAt(line.to)
+      do {
+        if ([ 'FencedCode', 'CodeBlock', 'CodeText', 'YAMLFrontmatter' ].includes(node.name)) { break }
+        if (!node.parent()) {
+          lineEnds.add(line.to)
+          break
+        }
+      } while (true)
+    }
   }
-  return builder.finish()
+  return Decoration.set(Array.from(lineEnds, pos => pilcrowDeco.range(pos)), true)
 }
 
 /**

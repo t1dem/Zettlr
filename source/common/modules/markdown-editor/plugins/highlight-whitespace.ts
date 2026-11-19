@@ -16,8 +16,7 @@ import {
   type Extension,
   Compartment,
   StateEffect,
-  EditorState,
-  RangeSetBuilder
+  EditorState
 } from '@codemirror/state'
 import {
   EditorView,
@@ -30,6 +29,7 @@ import {
   WidgetType
 } from '@codemirror/view'
 import { configUpdateEffect } from '../util/configuration'
+import { syntaxTree } from '@codemirror/language'
 
 const extensionCompartment = new Compartment()
 
@@ -41,6 +41,8 @@ class PilcrowWidget extends WidgetType {
     const span = document.createElement('span')
     span.className = 'cm-pilcrow'
     span.textContent = '¶'
+    span.setAttribute('aria-hidden', 'true')
+
     return span
   }
 
@@ -49,18 +51,49 @@ class PilcrowWidget extends WidgetType {
   }
 }
 
-const pilcrowDeco = Decoration.widget({ widget: new PilcrowWidget(), side: 1 })
+// The widget should appear last, so we set it to the highest side
+const pilcrowDeco = Decoration.widget({ widget: new PilcrowWidget(), side: 10000 })
 
 function showLineEndings (view: EditorView): DecorationSet {
-  const builder = new RangeSetBuilder<Decoration>()
+  const lineEnds = new Set<number>()
+  const tree = syntaxTree(view.state)
   for (const { from, to } of view.visibleRanges) {
+    tree.iterate({
+      from,
+      to,
+      enter (node) {
+
+        // Don't show pilcrows in code text
+        if (node.name === 'CodeText') { return false }
+
+        if ([ 'Paragraph', 'Blockquote', 'FootnoteRef' ].includes(node.name) || node.name.includes('ATX') || node.name.includes('Setext')) {
+          for (let pos = node.from; pos <= node.to;) {
+            const line = view.state.doc.lineAt(pos)
+            lineEnds.add(line.to)
+            pos = line.to + 1
+          }
+          return false
+        }
+      }
+    })
+
+    // Blank lines between Markdown nodes are missing from the syntax tree.
     for (let pos = from; pos <= to;) {
       const line = view.state.doc.lineAt(pos)
-      builder.add(line.to, line.to, pilcrowDeco)
       pos = line.to + 1
+      if (line.text.trim() !== '' || lineEnds.has(line.to)) { continue }
+
+      const node = tree.cursorAt(line.to)
+      do {
+        if ([ 'FencedCode', 'CodeBlock', 'CodeText', 'YAMLFrontmatter' ].includes(node.name)) { break }
+        if (!node.parent()) {
+          lineEnds.add(line.to)
+          break
+        }
+      } while (true)
     }
   }
-  return builder.finish()
+  return Decoration.set(Array.from(lineEnds, pos => pilcrowDeco.range(pos)), true)
 }
 
 /**
